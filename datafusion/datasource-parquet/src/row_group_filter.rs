@@ -62,6 +62,12 @@ pub(crate) fn row_group_in_range(metadata: &RowGroupMetaData, range: &FileRange)
     range.contains(offset)
 }
 
+#[derive(Clone, Copy, Default)]
+struct RowGroupStatisticsOptions<'a> {
+    column_orders: Option<&'a [ColumnOrder]>,
+    missing_null_counts_as_zero: bool,
+}
+
 impl RowGroupAccessPlanFilter {
     /// Create a new `RowGroupPlanBuilder` for pruning out the groups to scan
     /// based on metadata and statistics
@@ -278,9 +284,9 @@ impl RowGroupAccessPlanFilter {
             arrow_schema,
             parquet_schema,
             groups,
-            None,
             predicate,
             metrics,
+            RowGroupStatisticsOptions::default(),
         );
     }
 
@@ -299,14 +305,34 @@ impl RowGroupAccessPlanFilter {
         predicate: &PruningPredicate,
         metrics: &ParquetFileMetrics,
     ) {
+        self.prune_by_statistics_with_metadata_and_missing_null_counts(
+            arrow_schema,
+            metadata,
+            predicate,
+            metrics,
+            false,
+        );
+    }
+
+    pub(crate) fn prune_by_statistics_with_metadata_and_missing_null_counts(
+        &mut self,
+        arrow_schema: &Schema,
+        metadata: &ParquetMetaData,
+        predicate: &PruningPredicate,
+        metrics: &ParquetFileMetrics,
+        missing_null_counts_as_zero: bool,
+    ) {
         let file_metadata = metadata.file_metadata();
         self.prune_by_statistics_inner(
             arrow_schema,
             file_metadata.schema_descr(),
             metadata.row_groups(),
-            file_metadata.column_orders().map(Vec::as_slice),
             predicate,
             metrics,
+            RowGroupStatisticsOptions {
+                column_orders: file_metadata.column_orders().map(Vec::as_slice),
+                missing_null_counts_as_zero,
+            },
         );
     }
 
@@ -315,9 +341,9 @@ impl RowGroupAccessPlanFilter {
         arrow_schema: &Schema,
         parquet_schema: &SchemaDescriptor,
         groups: &[RowGroupMetaData],
-        column_orders: Option<&[ColumnOrder]>,
         predicate: &PruningPredicate,
         metrics: &ParquetFileMetrics,
+        options: RowGroupStatisticsOptions<'_>,
     ) {
         // scoped timer updates on drop
         let _timer_guard = metrics.statistics_eval_time.timer();
@@ -332,9 +358,10 @@ impl RowGroupAccessPlanFilter {
 
         let pruning_stats = RowGroupPruningStatistics {
             parquet_schema,
-            column_orders,
+            column_orders: options.column_orders,
             row_group_metadatas,
             arrow_schema,
+            missing_null_counts_as_zero: options.missing_null_counts_as_zero,
         };
 
         // try to prune the row groups in a single call
@@ -402,6 +429,7 @@ impl RowGroupAccessPlanFilter {
                 .map(|&i| &groups[i])
                 .collect::<Vec<_>>(),
             arrow_schema,
+            missing_null_counts_as_zero: pruning_stats.missing_null_counts_as_zero,
         };
 
         let Ok(inverted_values) = inverted_predicate.prune(&inverted_pruning_stats)
@@ -485,6 +513,7 @@ pub(crate) struct RowGroupPruningStatistics<'a> {
     pub(crate) column_orders: Option<&'a [ColumnOrder]>,
     pub(crate) row_group_metadatas: Vec<&'a RowGroupMetaData>,
     pub(crate) arrow_schema: &'a Schema,
+    pub(crate) missing_null_counts_as_zero: bool,
 }
 
 impl<'a> RowGroupPruningStatistics<'a> {
@@ -499,9 +528,7 @@ impl<'a> RowGroupPruningStatistics<'a> {
             self.arrow_schema,
             self.parquet_schema,
         )?
-        // Missing counts cannot rule out nulls, either when pruning groups or
-        // when proving that every row matches the predicate.
-        .with_missing_null_counts_as_zero(false))
+        .with_missing_null_counts_as_zero(self.missing_null_counts_as_zero))
     }
 
     fn min_max_statistics_converter(
@@ -813,6 +840,64 @@ mod tests {
                 &parquet_file_metrics(),
             );
             assert_eq!(filter.build().row_group_indexes(), expected, "{expr}");
+        }
+
+        let predicate = build_test_pruning_predicate(
+            logical2physical(&col("c1").is_null(), &schema),
+            Arc::clone(&schema),
+        );
+        for (missing_null_counts_as_zero, expected) in
+            [(false, vec![0, 2]), (true, vec![2])]
+        {
+            let mut filter =
+                RowGroupAccessPlanFilter::new(ParquetAccessPlan::new_all(groups.len()));
+            filter.prune_by_statistics_inner(
+                &schema,
+                &schema_descr,
+                &groups,
+                &predicate,
+                &parquet_file_metrics(),
+                RowGroupStatisticsOptions {
+                    missing_null_counts_as_zero,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                filter.build().row_group_indexes(),
+                expected,
+                "missing_null_counts_as_zero={missing_null_counts_as_zero}",
+            );
+        }
+
+        let predicate = build_test_pruning_predicate(
+            logical2physical(&col("c1").gt(lit(15)), &schema),
+            Arc::clone(&schema),
+        );
+        for (missing_null_counts_as_zero, expected) in [
+            (false, vec![false, true, false]),
+            (true, vec![true, true, false]),
+        ] {
+            let mut filter =
+                RowGroupAccessPlanFilter::new(ParquetAccessPlan::new_all(groups.len()));
+            filter.prune_by_statistics_inner(
+                &schema,
+                &schema_descr,
+                &groups,
+                &predicate,
+                &parquet_file_metrics(),
+                RowGroupStatisticsOptions {
+                    missing_null_counts_as_zero,
+                    ..Default::default()
+                },
+            );
+            let plan = filter.build();
+            let actual = (0..groups.len())
+                .map(|index| plan.is_fully_matched(index))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual, expected,
+                "missing_null_counts_as_zero={missing_null_counts_as_zero}",
+            );
         }
     }
 

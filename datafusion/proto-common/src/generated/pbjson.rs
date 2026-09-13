@@ -6432,6 +6432,9 @@ impl serde::Serialize for ParquetOptions {
         if self.max_in_list_size != 0 {
             len += 1;
         }
+        if self.infer_legacy_null_counts {
+            len += 1;
+        }
         if !self.created_by.is_empty() {
             len += 1;
         }
@@ -6556,6 +6559,9 @@ impl serde::Serialize for ParquetOptions {
             #[allow(clippy::needless_borrow)]
             #[allow(clippy::needless_borrows_for_generic_args)]
             struct_ser.serialize_field("maxInListSize", ToString::to_string(&self.max_in_list_size).as_str())?;
+        }
+        if self.infer_legacy_null_counts {
+            struct_ser.serialize_field("inferLegacyNullCounts", &self.infer_legacy_null_counts)?;
         }
         if !self.created_by.is_empty() {
             struct_ser.serialize_field("createdBy", &self.created_by)?;
@@ -6717,6 +6723,8 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
             "maxRowGroupSize",
             "max_in_list_size",
             "maxInListSize",
+            "infer_legacy_null_counts",
+            "inferLegacyNullCounts",
             "created_by",
             "createdBy",
             "content_defined_chunking",
@@ -6770,6 +6778,7 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
             DataPageRowCountLimit,
             MaxRowGroupSize,
             MaxInListSize,
+            InferLegacyNullCounts,
             CreatedBy,
             ContentDefinedChunking,
             MetadataSizeHint,
@@ -6827,6 +6836,7 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
                             "dataPageRowCountLimit" | "data_page_row_count_limit" => Ok(GeneratedField::DataPageRowCountLimit),
                             "maxRowGroupSize" | "max_row_group_size" => Ok(GeneratedField::MaxRowGroupSize),
                             "maxInListSize" | "max_in_list_size" => Ok(GeneratedField::MaxInListSize),
+                            "inferLegacyNullCounts" | "infer_legacy_null_counts" => Ok(GeneratedField::InferLegacyNullCounts),
                             "createdBy" | "created_by" => Ok(GeneratedField::CreatedBy),
                             "contentDefinedChunking" | "content_defined_chunking" => Ok(GeneratedField::ContentDefinedChunking),
                             "metadataSizeHint" | "metadata_size_hint" => Ok(GeneratedField::MetadataSizeHint),
@@ -6882,6 +6892,7 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
                 let mut data_page_row_count_limit__ = None;
                 let mut max_row_group_size__ = None;
                 let mut max_in_list_size__ = None;
+                let mut infer_legacy_null_counts__ = None;
                 let mut created_by__ = None;
                 let mut content_defined_chunking__ = None;
                 let mut metadata_size_hint_opt__ = None;
@@ -7041,6 +7052,12 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
                                 Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
                             ;
                         }
+                        GeneratedField::InferLegacyNullCounts => {
+                            if infer_legacy_null_counts__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("inferLegacyNullCounts"));
+                            }
+                            infer_legacy_null_counts__ = Some(map_.next_value()?);
+                        }
                         GeneratedField::CreatedBy => {
                             if created_by__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("createdBy"));
@@ -7155,6 +7172,7 @@ impl<'de> serde::Deserialize<'de> for ParquetOptions {
                     data_page_row_count_limit: data_page_row_count_limit__.unwrap_or_default(),
                     max_row_group_size: max_row_group_size__.unwrap_or_default(),
                     max_in_list_size: max_in_list_size__.unwrap_or_default(),
+                    infer_legacy_null_counts: infer_legacy_null_counts__.unwrap_or_default(),
                     created_by: created_by__.unwrap_or_default(),
                     content_defined_chunking: content_defined_chunking__,
                     metadata_size_hint_opt: metadata_size_hint_opt__,

@@ -47,7 +47,7 @@ use parquet::schema::types::{SchemaDescriptor, Type as ParquetType};
 
 use crate::RowGroupAccessPlanFilter;
 use crate::metadata::{DFParquetMetadata, has_untrusted_min_max_order};
-use crate::push_decoder::RowGroupPruner;
+use crate::push_decoder::{RowGroupPruner, RowGroupPrunerOptions};
 use crate::row_group_filter::RowGroupPruningStatistics;
 use crate::{PagePruningAccessPlanFilter, ParquetAccessPlan, ParquetFileMetrics};
 
@@ -352,7 +352,10 @@ fn byte_array_order_preserves_matching_rows_at_every_pruning_level() {
             Arc::clone(&file.metadata),
             Count::new(),
             Count::new(),
-            MAX_IN_LIST_SIZE,
+            RowGroupPrunerOptions {
+                max_in_list_size: MAX_IN_LIST_SIZE,
+                missing_null_counts_as_zero: false,
+            },
         );
         assert!(!runtime_pruner.should_prune(&[0]), "order={order:?}");
         assert!(runtime_pruner.should_prune(&[1]), "all-null row group");
@@ -520,6 +523,7 @@ fn byte_array_order_guard_follows_parquet_type_not_arrow_representation() {
             column_orders: metadata.column_orders().map(Vec::as_slice),
             row_group_metadatas: file.metadata.row_groups().iter().collect(),
             arrow_schema: &schema,
+            missing_null_counts_as_zero: false,
         };
         for values in [stats.min_values(&column), stats.max_values(&column)] {
             let values = values.unwrap();

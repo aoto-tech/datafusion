@@ -37,6 +37,7 @@ use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 
 use datafusion::physical_plan::collect;
+use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_common::ScalarValue;
 use parquet::arrow::ArrowWriter;
@@ -53,10 +54,24 @@ use crate::parquet::{ContextWithParquet, Scenario};
 /// Keep min/max but omit the middle row group's null count. Negate the
 /// values for DESC so the first group always establishes the winning bound.
 fn file_with_missing_null_count(descending: bool, has_null: bool) -> NamedTempFile {
+    file_with_null_count_metadata(descending, has_null, has_null, None)
+}
+
+fn file_with_null_count_metadata(
+    descending: bool,
+    has_null: bool,
+    omit_null_count: bool,
+    created_by: Option<&str>,
+) -> NamedTempFile {
     let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
-    let props = WriterProperties::builder()
-        .set_statistics_enabled(EnabledStatistics::Chunk)
-        .build();
+    let props =
+        WriterProperties::builder().set_statistics_enabled(EnabledStatistics::Chunk);
+    let props = if let Some(created_by) = created_by {
+        props.set_created_by(created_by.to_string())
+    } else {
+        props
+    }
+    .build();
     let mut bytes = Vec::new();
     let mut writer =
         ArrowWriter::try_new(&mut bytes, schema.clone(), Some(props)).unwrap();
@@ -79,7 +94,7 @@ fn file_with_missing_null_count(descending: bool, has_null: bool) -> NamedTempFi
     }
     let metadata = writer.close().unwrap();
     let mut groups = metadata.row_groups().to_vec();
-    if has_null {
+    if omit_null_count {
         let column = groups[1].column(0).clone();
         let Statistics::Int64(stats) = column.statistics().unwrap() else {
             panic!("expected Int64 statistics");
@@ -137,6 +152,58 @@ async fn missing_null_count_preserves_null_filter_and_count() {
             ScalarValue::try_from_array(batches[0].column(0), 0).unwrap(),
             ScalarValue::Int64(Some(expected)),
             "{sql}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_null_count_inference_flows_from_session_config() {
+    for (created_by, infer_legacy_null_counts, expected_pruned) in [
+        ("parquet-rs version 53.0.0", false, 2),
+        ("parquet-rs version 53.0.0", true, 3),
+        ("custom writer", true, 2),
+    ] {
+        let file = file_with_null_count_metadata(false, false, true, Some(created_by));
+        let mut config = SessionConfig::new().with_parquet_page_index_pruning(false);
+        config.options_mut().execution.collect_statistics = false;
+        config
+            .options_mut()
+            .execution
+            .parquet
+            .infer_legacy_null_counts = infer_legacy_null_counts;
+        let ctx = SessionContext::new_with_config(config);
+        ctx.register_parquet(
+            "t",
+            file.path().to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let plan = ctx
+            .sql("SELECT COUNT(*) FROM t WHERE v IS NULL")
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let batches = collect(plan.clone(), ctx.task_ctx()).await.unwrap();
+        assert_eq!(
+            ScalarValue::try_from_array(batches[0].column(0), 0).unwrap(),
+            ScalarValue::Int64(Some(0)),
+        );
+
+        let metrics = MetricsFinder::find_metrics(plan.as_ref()).unwrap();
+        let MetricValue::PruningMetrics {
+            pruning_metrics, ..
+        } = metrics.sum_by_name("row_groups_pruned_statistics").unwrap()
+        else {
+            panic!("expected row-group pruning metrics");
+        };
+        assert_eq!(
+            pruning_metrics.pruned(),
+            expected_pruned,
+            "created_by={created_by}, infer_legacy_null_counts={infer_legacy_null_counts}",
         );
     }
 }

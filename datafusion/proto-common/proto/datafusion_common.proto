@@ -620,6 +620,8 @@ message ParquetOptions {
 
   uint64 max_in_list_size = 38;
 
+  bool infer_legacy_null_counts = 39; // default = false
+
   string created_by = 16;
 
   oneof coerce_int96_opt {

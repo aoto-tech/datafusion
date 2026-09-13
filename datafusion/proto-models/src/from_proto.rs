@@ -407,6 +407,7 @@ impl TryFrom<&ParquetOptionsProto> for ParquetOptions {
                 .transpose()?,
             max_row_group_size: to_usize(proto.max_row_group_size, "max_row_group_size")?,
             max_in_list_size: to_usize(proto.max_in_list_size, "max_in_list_size")?,
+            infer_legacy_null_counts: proto.infer_legacy_null_counts,
             created_by: proto.created_by.clone(),
             column_index_truncate_length: proto
                 .column_index_truncate_length_opt

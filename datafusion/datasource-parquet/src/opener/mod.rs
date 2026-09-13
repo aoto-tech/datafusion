@@ -25,11 +25,12 @@ use self::early_stop::EarlyStoppingStream;
 use self::encryption::EncryptionContext;
 use crate::access_plan::PreparedAccessPlan;
 use crate::decoder_projection::DecoderProjection;
+use crate::metadata::legacy_writer_omits_zero_null_counts;
 use crate::metrics::{ByteProgress, RowFilterSkippedFullyMatchedMetric};
 use crate::page_filter::PagePruningAccessPlanFilter;
 use crate::push_decoder::{
     DecoderBuilderConfig, InitialDecoderState, PushDecoderStreamState, RgPlanEntry,
-    RowGroupPruner,
+    RowGroupPruner, RowGroupPrunerOptions,
 };
 use crate::row_group_filter::{RowGroupAccessPlanFilter, row_group_in_range};
 use crate::{
@@ -272,6 +273,8 @@ pub(super) struct ParquetMorselizer {
     pub enable_bloom_filter: bool,
     /// Should row group pruning be applied
     pub enable_row_group_stats_pruning: bool,
+    /// Whether legacy writer metadata may be used to infer missing null counts.
+    pub infer_legacy_null_counts: bool,
     /// Coerce INT96 timestamps to specific TimeUnit
     pub coerce_int96: Option<TimeUnit>,
     /// Optional timezone applied to INT96-coerced timestamps. When `Some`, the
@@ -460,6 +463,7 @@ struct PreparedParquetOpen {
     enable_page_index: bool,
     enable_bloom_filter: bool,
     enable_row_group_stats_pruning: bool,
+    infer_legacy_null_counts: bool,
     limit: Option<usize>,
     coerce_int96: Option<TimeUnit>,
     coerce_int96_tz: Option<Arc<str>>,
@@ -481,6 +485,7 @@ struct MetadataLoadedParquetOpen {
     prepared: PreparedParquetOpen,
     reader_metadata: ArrowReaderMetadata,
     options: ArrowReaderOptions,
+    missing_null_counts_as_zero: bool,
 }
 
 /// State of [`ParquetOpenState`]
@@ -867,6 +872,7 @@ impl ParquetMorselizer {
             enable_page_index: self.enable_page_index,
             enable_bloom_filter: self.enable_bloom_filter,
             enable_row_group_stats_pruning: self.enable_row_group_stats_pruning,
+            infer_legacy_null_counts: self.infer_legacy_null_counts,
             limit: self.limit,
             coerce_int96: self.coerce_int96,
             coerce_int96_tz: self.coerce_int96_tz.clone(),
@@ -951,10 +957,15 @@ impl PreparedParquetOpen {
         metadata_timer.stop();
         drop(metadata_timer);
 
+        let missing_null_counts_as_zero = self.infer_legacy_null_counts
+            && legacy_writer_omits_zero_null_counts(
+                reader_metadata.metadata().file_metadata(),
+            );
         Ok(MetadataLoadedParquetOpen {
             prepared: self,
             reader_metadata,
             options,
+            missing_null_counts_as_zero,
         })
     }
 }
@@ -967,6 +978,7 @@ impl MetadataLoadedParquetOpen {
             mut prepared,
             mut reader_metadata,
             mut options,
+            missing_null_counts_as_zero,
         } = self;
 
         // Note about schemas: we are actually dealing with **3 different schemas** here:
@@ -1100,6 +1112,7 @@ impl MetadataLoadedParquetOpen {
                 prepared,
                 reader_metadata,
                 options,
+                missing_null_counts_as_zero,
             },
             pruning_predicate,
             page_pruning_predicate,
@@ -1131,11 +1144,12 @@ impl FiltersPreparedParquetOpen {
         // If there is a predicate that can be evaluated against the metadata
         if let Some(predicate) = self.pruning_predicate.as_ref().map(|p| p.as_ref()) {
             if prepared.enable_row_group_stats_pruning {
-                row_groups.prune_by_statistics_with_metadata(
+                row_groups.prune_by_statistics_with_metadata_and_missing_null_counts(
                     &prepared.physical_file_schema,
                     &file_metadata,
                     predicate,
                     &prepared.file_metrics,
+                    self.loaded.missing_null_counts_as_zero,
                 );
             } else {
                 // Update metrics: statistics unavailable, so all row groups are
@@ -1372,6 +1386,7 @@ impl RowGroupsPrunedParquetOpen {
             prepared,
             reader_metadata,
             options: _,
+            missing_null_counts_as_zero,
         } = loaded;
 
         let file_metadata = Arc::clone(reader_metadata.metadata());
@@ -1665,7 +1680,10 @@ impl RowGroupsPrunedParquetOpen {
                         Arc::clone(reader_metadata.metadata()),
                         prepared.predicate_creation_errors.clone(),
                         prepared.file_metrics.predicate_evaluation_errors.clone(),
-                        prepared.max_in_list_size,
+                        RowGroupPrunerOptions {
+                            max_in_list_size: prepared.max_in_list_size,
+                            missing_null_counts_as_zero,
+                        },
                     ))
                 }
                 _ => None,
@@ -1945,6 +1963,7 @@ mod test {
         enable_page_index: bool,
         enable_bloom_filter: bool,
         enable_row_group_stats_pruning: bool,
+        infer_legacy_null_counts: bool,
         coerce_int96: Option<TimeUnit>,
         max_predicate_cache_size: Option<usize>,
         max_in_list_size: usize,
@@ -2126,6 +2145,7 @@ mod test {
                     prepared,
                     reader_metadata,
                     options,
+                    missing_null_counts_as_zero: false,
                 },
                 pruning_predicate: None,
                 page_pruning_predicate,
@@ -2156,6 +2176,7 @@ mod test {
                 enable_page_index: false,
                 enable_bloom_filter: false,
                 enable_row_group_stats_pruning: false,
+                infer_legacy_null_counts: false,
                 coerce_int96: None,
                 max_predicate_cache_size: None,
                 max_in_list_size: MAX_IN_LIST_SIZE,
@@ -2331,6 +2352,7 @@ mod test {
                 enable_page_index: self.enable_page_index,
                 enable_bloom_filter: self.enable_bloom_filter,
                 enable_row_group_stats_pruning: self.enable_row_group_stats_pruning,
+                infer_legacy_null_counts: self.infer_legacy_null_counts,
                 coerce_int96: self.coerce_int96,
                 // End-to-end coercion behavior (including timezone) is
                 // covered by parquet.slt. No opener-level test currently

@@ -482,9 +482,10 @@ impl FileFormat for ParquetFormat {
             .with_file_metadata_cache(Some(file_metadata_cache))
             .fetch_metadata()
             .await?;
-        let statistics = DFParquetMetadata::statistics_from_parquet_metadata(
+        let statistics = DFParquetMetadata::statistics_from_parquet_metadata_with_legacy_null_count_inference(
             &metadata,
             &table_schema,
+            self.options.global.infer_legacy_null_counts,
         )?;
         let ordering =
             crate::metadata::ordering_from_parquet_metadata(&metadata, &table_schema)?;
@@ -745,6 +746,7 @@ impl From<&ParquetFormatFactory> for protobuf::TableParquetOptions {
             }),
             max_row_group_size: global_options.global.max_row_group_size as u64,
             max_in_list_size: global_options.global.max_in_list_size as u64,
+            infer_legacy_null_counts: global_options.global.infer_legacy_null_counts,
             created_by: global_options.global.created_by.clone(),
             column_index_truncate_length_opt: global_options.global.column_index_truncate_length.map(|length| {
                 parquet_options::ColumnIndexTruncateLengthOpt::ColumnIndexTruncateLength(length as u64)

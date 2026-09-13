@@ -1413,6 +1413,13 @@ config_namespace! {
         /// Defaults to 20.
         pub max_in_list_size: usize, default = 20
 
+        /// (reading) If true, treat missing Parquet null counts as zero when the
+        /// file's `created_by` identifies parquet-rs before 53.1.0 or DataFusion
+        /// before 42.1.0. This can restore statistics-based optimizations for
+        /// files written by those versions, but `created_by` is configurable and
+        /// is therefore not proof that a missing count is zero.
+        pub infer_legacy_null_counts: bool, default = false
+
         // The following options affect writing to parquet files
         // and map to parquet::file::properties::WriterProperties
 

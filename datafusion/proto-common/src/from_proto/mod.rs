@@ -1110,6 +1110,7 @@ impl TryFrom<&protobuf::ParquetOptions> for ParquetOptions {
                 .transpose()?,
             max_row_group_size: to_usize(value.max_row_group_size, "max_row_group_size")?,
             max_in_list_size: to_usize(value.max_in_list_size, "max_in_list_size")?,
+            infer_legacy_null_counts: value.infer_legacy_null_counts,
             created_by: value.created_by.clone(),
             column_index_truncate_length: value
                 .column_index_truncate_length_opt.as_ref()
@@ -1477,6 +1478,16 @@ mod tests {
         assert!(!opts.content_defined_chunking.enabled);
         let recovered = parquet_options_proto_round_trip(opts.clone());
         assert_eq!(opts, recovered);
+    }
+
+    #[test]
+    fn test_parquet_options_infer_legacy_null_counts_round_trip() {
+        let opts = ParquetOptions {
+            infer_legacy_null_counts: true,
+            ..ParquetOptions::default()
+        };
+        let recovered = parquet_options_proto_round_trip(opts);
+        assert!(recovered.infer_legacy_null_counts);
     }
 
     #[test]

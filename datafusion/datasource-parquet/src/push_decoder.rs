@@ -182,6 +182,13 @@ pub(crate) struct RowGroupPruner {
     /// container-level pruning. Sourced from
     /// `datafusion.execution.parquet.max_in_list_size`.
     max_in_list_size: usize,
+    missing_null_counts_as_zero: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RowGroupPrunerOptions {
+    pub(crate) max_in_list_size: usize,
+    pub(crate) missing_null_counts_as_zero: bool,
 }
 
 impl RowGroupPruner {
@@ -191,7 +198,7 @@ impl RowGroupPruner {
         parquet_metadata: Arc<ParquetMetaData>,
         predicate_creation_errors: Count,
         predicate_evaluation_errors: Count,
-        max_in_list_size: usize,
+        options: RowGroupPrunerOptions,
     ) -> Self {
         let tracking = DynamicFilterTracking::classify(&predicate);
         Self {
@@ -203,7 +210,8 @@ impl RowGroupPruner {
             pruning_predicate: None,
             predicate_creation_errors,
             predicate_evaluation_errors,
-            max_in_list_size,
+            max_in_list_size: options.max_in_list_size,
+            missing_null_counts_as_zero: options.missing_null_counts_as_zero,
         }
     }
 
@@ -253,6 +261,7 @@ impl RowGroupPruner {
                 .map(Vec::as_slice),
             row_group_metadatas,
             arrow_schema: self.arrow_schema.as_ref(),
+            missing_null_counts_as_zero: self.missing_null_counts_as_zero,
         };
 
         match pp.prune(&stats) {
@@ -787,7 +796,10 @@ mod tests {
             Arc::clone(&meta),
             creation,
             evaluation,
-            MAX_IN_LIST_SIZE,
+            RowGroupPrunerOptions {
+                max_in_list_size: MAX_IN_LIST_SIZE,
+                missing_null_counts_as_zero: false,
+            },
         );
 
         // RG0 (0..1000) is entirely below threshold → fully prunable.
@@ -819,7 +831,10 @@ mod tests {
             Arc::clone(&meta),
             creation,
             evaluation,
-            MAX_IN_LIST_SIZE,
+            RowGroupPrunerOptions {
+                max_in_list_size: MAX_IN_LIST_SIZE,
+                missing_null_counts_as_zero: false,
+            },
         );
 
         // Initial threshold 500 → only the lower half of RG0 fails, so RG0
@@ -865,7 +880,10 @@ mod tests {
             Arc::clone(&meta),
             creation,
             evaluation,
-            MAX_IN_LIST_SIZE,
+            RowGroupPrunerOptions {
+                max_in_list_size: MAX_IN_LIST_SIZE,
+                missing_null_counts_as_zero: false,
+            },
         );
         // No pruning predicate could be built → conservatively keep RGs.
         assert!(!pruner.should_prune(&[0]));
